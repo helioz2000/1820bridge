@@ -35,7 +35,7 @@
 #include "1820tag.h"
 #include "mqtt.h"
 #include "1820bridge.h"
-#include "1820dev.h"
+#include "dev1820.h"
 
 using namespace std;
 using namespace libconfig;
@@ -74,10 +74,9 @@ double accPwr;						// power readout accumulator (reset)
 double accPwrChg, accPwrDsc;		// power accumulator (no reset)
 
 updatecycle *updateCycles = NULL;	// array of update cycle definitions
-Tag *tags = NULL;			// array of all 1820 tags
+Tag *tags = NULL;					// array of all 1820 tags
 
 int tagCount = -1;
-uint32_t i2cTransactionDelay = 0;	// delay between modbus transactions
 #define I2C_DEVICEID_MAX 254		// highest permitted I2C device ID
 #define I2C_DEVICEID_MIN 1			// lowest permitted I2C device ID
 
@@ -93,6 +92,7 @@ void mqtt_clear_tags(bool publish_noread, bool clear_retain);
 
 MQTT mqtt(MQTT_CLIENT_ID);
 Config cfg;			// config file
+Dev1820 dev;
 //Hardware hw(false);	// no screen
 
 /**
@@ -231,47 +231,12 @@ bool cfg_get_str(const std::string &path, std::string &value) {
  */
 bool process() {
 	bool retval = false;
-	if (mqtt.isConnected()) {
-		if (i2c_read_process()) retval = true;
-	}
+//	if (mqtt.isConnected()) {
+//		if (i2c_read_process()) retval = true;
+//	}
+	retval = true;
 	return retval;
 }
-
-/** Process accumulator values
- * called at regulat intervals to integrate accumulator values
- * @param
- * @return true on success
- */
-/*bool processAccumulators () {
-	int readResult;
-	float milliVolts, milliAmps;
-	double Wh, W, elapsedseconds;
-	struct timespec thistime, elapsedtime;
-
-	// read Voltage and Current
-	readResult = vimon.getMilliVolts(0, &milliVolts);
-	if (readResult != 0) return false;
-	readResult = vimon.getBipolarMilliAmps(&milliAmps);
-	if (readResult != 0) return false;
-	// calculate time since last call
-	clock_gettime(CLOCK_MONOTONIC, &thistime);
-	timespec_diff(&lastAccTime, &thistime, &elapsedtime);
-	timespec_set(&thistime, &lastAccTime);		// update lassAccTime
-	W = (milliVolts * milliAmps) * 1.0e-6;		// Watts
-	// tiem since last measurement
-	elapsedseconds = (double)elapsedtime.tv_sec + (double)elapsedtime.tv_nsec * 1.0e-9;
-	Wh = (W / 3600) * elapsedseconds;
-	// add Ws to accumulator
-	accPwr += Wh;
-	if (Wh > 0.0) {
-		accPwrChg += Wh;
-	} else {
-		accPwrDsc += abs(Wh);
-	}
-//	printf("%s - %f %f %f\n", __func__, accPwr, accPwrCount, Ws);
-	return true;
-}
-*/
 
 /*
 bool init_values(void)
@@ -423,16 +388,15 @@ bool mqtt_publish_tag(Tag *tag) {
 		printf("%s %s - %s\n", __FILE__, __func__, tag->getTopic());
 	}
 	if (!mqtt.isConnected()) return false;
-	if (tag->getTopicString().empty()) return true;	// don't publish if topic is empty
 	// Publish value if read was OK
-	if (!tag->isNoread()) {
+//	if (!tag->isNoread()) {
 		mqtt.publish(tag->getTopic(), tag->getFormat(), tag->getScaledValue(), tag->getPublishRetain());
 		//printf("%s %s - %s \n", __FILE__, __FUNCTION__, tag->getTopic());
 		return true;
-	}
+//	}
 	//printf("%s - NoRead: %s \n", __FUNCTION__, tag->getTopic());
 	// Handle Noread
-	if (!tag->noReadIgnoreExceeded()) return true;		// ignore noread, do nothing
+/*	if (!tag->noReadIgnoreExceeded()) return true;		// ignore noread, do nothing
 	// noreadignore is exceeded, need to take action
 	switch (tag->getNoreadAction()) {
 	case 0:	// publish null value
@@ -445,7 +409,7 @@ bool mqtt_publish_tag(Tag *tag) {
 		// do nothing (default, -1)
 		break;
 	}
-
+*/
 	return true;
 }
 
@@ -458,7 +422,7 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 
 	int index = 0, tagIndex = 0;
 	int *tagArray;
-	I2Ctag i2cTag;
+	Tag tag;
 	//printf("%s %s", __FILE__, __func__);
 
 	// Iterate over all update cycles
@@ -473,12 +437,12 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 		// read each tag in the array
 		tagIndex = 0;
 		while (tagArray[tagIndex] >= 0) {
-			i2cTag = i2cReadTags[tagArray[tagIndex]];
+			tag = tags[tagArray[tagIndex]];
 			if (publish_noread) {}
-				mqtt.publish(i2cTag.getTopic(), i2cTag.getFormat(), i2cTag.getNoreadValue(), i2cTag.getPublishRetain());
+				mqtt.publish(tag.getTopic(), tag.getFormat(), 0.0, tag.getPublishRetain());
 				//mqtt_publish_tag(mbTag, true);			// publish noread value
 			if (clear_retain) {}
-				mqtt.clear_retained_message(i2cTag.getTopic());	// clear retained status
+				mqtt.clear_retained_message(tag.getTopic());	// clear retained status
 			tagIndex++;
 		}
 		index++;
@@ -486,7 +450,7 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 
 }
 
-#pragma mark I2C
+#pragma mark 1820 Device
 
 /**
  * Read single tag from I2C device
@@ -600,8 +564,7 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
  * 6) go back to 1) until all update cycles have been matched
  */
 bool assign_updatecycles () {
-	int updidx = 0;
-	int i2cTagIdx = 0;
+	int updidx = 0, tagIdx = 0;
 	int cycleIdent = 0;
 	int matchCount = 0;
 	int *intArray = NULL;
@@ -612,15 +575,15 @@ bool assign_updatecycles () {
 		updateCycles[updidx].tagArray = NULL;
 		updateCycles[updidx].tagArraySize = 0;
 		// iterate over mbReadTags array
-		i2cTagIdx = 0;
+		tagIdx = 0;
 		matchCount = 0;
-		while (i2cReadTags[i2cTagIdx].updateCycleId() >= 0) {
+		while (tags[tagIdx].getUpdateCycleId() >= 0) {
 			// count tags with cycle id match
-			if (i2cReadTags[i2cTagIdx].updateCycleId() == cycleIdent) {
+			if (tags[tagIdx].getUpdateCycleId() == cycleIdent) {
 				matchCount++;
 				//cout << cycleIdent <<" " << mbReadTags[mbTagIdx].getAddress() << endl;
 			}
-			i2cTagIdx++;
+			tagIdx++;
 		}
 		// skip to next cycle update if we have no matching tags
 		if (matchCount < 1) {
@@ -631,15 +594,15 @@ bool assign_updatecycles () {
 		// allocate array for tags in this cycleupdate
 		intArray = new int[matchCount+1];			// +1 to allow for end marker
 		// fill array with matching tag indexes
-		i2cTagIdx = 0;
+		tagIdx = 0;
 		arIndex = 0;
-		while (i2cReadTags[i2cTagIdx].updateCycleId() >= 0) {
+		while (tags[tagIdx].getUpdateCycleId() >= 0) {
 			// count tags with cycle id match
-			if (i2cReadTags[i2cTagIdx].updateCycleId() == cycleIdent) {
-				intArray[arIndex] = i2cTagIdx;
+			if (tags[tagIdx].getUpdateCycleId() == cycleIdent) {
+				intArray[arIndex] = tagIdx;
 				arIndex++;
 			}
-			i2cTagIdx++;
+			tagIdx++;
 		}
 		// mark end of array
 		intArray[arIndex] = -1;
@@ -653,11 +616,11 @@ bool assign_updatecycles () {
 }
 
 /**
- * read tag configuration for one I2C device from config file
+ * read tag configuration for one 1820 device from config file
  */
-bool i2c_config_tags(Setting& tagsSettings, uint8_t deviceId) {
+bool config_tags(Setting& tagsSettings, uint8_t deviceId) {
 	int tagIndex;
-	int tagAddress;
+	int tagChannel;
 	int tagUpdateCycle;
 	string strValue;
 	float fValue;
@@ -671,38 +634,38 @@ bool i2c_config_tags(Setting& tagsSettings, uint8_t deviceId) {
 	}
 
 	for (tagIndex = 0; tagIndex < numTags; tagIndex++) {
-		if (tagsSettings[tagIndex].lookupValue("address", tagAddress)) {
-			i2cReadTags[i2cTagCount].setAddress(tagAddress);
-			i2cReadTags[i2cTagCount].setSlaveId(deviceId);
+		if (tagsSettings[tagIndex].lookupValue("channel", tagChannel)) {
+			tags[tagCount].setChannel(tagChannel);
+			//tags[tagCount].setSlaveId(deviceId);
 		} else {
-			log(LOG_WARNING, "Error in config file, tag address missing");
+			log(LOG_WARNING, "Error in config file, tag channel missing");
 			continue;		// skip to next tag
 		}
-		if (i2cTagsSettings[tagIndex].lookupValue("update_cycle", tagUpdateCycle)) {
-			i2cReadTags[i2cTagCount].setUpdateCycleId(tagUpdateCycle);
+		if (tagsSettings[tagIndex].lookupValue("update_cycle", tagUpdateCycle)) {
+			tags[tagCount].setUpdateCycleId(tagUpdateCycle);
 		}
 		// is topic present? -> read mqtt related parametrs
 		if (tagsSettings[tagIndex].lookupValue("topic", strValue)) {
-			i2cReadTags[i2cTagCount].setTopic(strValue.c_str());
-			i2cReadTags[i2cTagCount].setPublishRetain(mqtt_retain_default);		// set to default
+			tags[tagCount].setTopic(strValue.c_str());
+			tags[tagCount].setPublishRetain(mqtt_retain_default);		// set to default
 			if (tagsSettings[tagIndex].lookupValue("retain", bValue))		// override default if required
-				i2cReadTags[i2cTagCount].setPublishRetain(bValue);
+				tags[tagCount].setPublishRetain(bValue);
 			if (tagsSettings[tagIndex].lookupValue("format", strValue))
-				i2cReadTags[i2cTagCount].setFormat(strValue.c_str());
+				tags[tagCount].setFormat(strValue.c_str());
 			if (tagsSettings[tagIndex].lookupValue("multiplier", fValue))
-				i2cReadTags[i2cTagCount].setMultiplier(fValue);
+				tags[tagCount].setMultiplier(fValue);
 			if (tagsSettings[tagIndex].lookupValue("offset", fValue))
-				i2cReadTags[i2cTagCount].setOffset(fValue);
+				tags[tagCount].setOffset(fValue);
 			if (tagsSettings[tagIndex].lookupValue("noreadvalue", fValue))
-				i2cReadTags[i2cTagCount].setNoreadValue(fValue);
+				tags[tagCount].setNoreadValue(fValue);
 			if (tagsSettings[tagIndex].lookupValue("noreadaction", intValue))
-				i2cReadTags[i2cTagCount].setNoreadAction(intValue);
+				tags[tagCount].setNoreadAction(intValue);
 			if (tagsSettings[tagIndex].lookupValue("noreadignore", intValue))
-				i2cReadTags[i2cTagCount].setNoreadIgnore(intValue);
+				tags[tagCount].setNoreadIgnore(intValue);
 		}
-		cout << "Tag " << i2cTagCount << " addr: " << tagAddress << " cycle: " << tagUpdateCycle;
-		cout << " Topic: " << i2cReadTags[i2cTagCount].getTopicString() << endl;
-		i2cTagCount++;
+		cout << "Tag " << tagCount << " channel: " << tagChannel << " cycle: " << tagUpdateCycle;
+		cout << " Topic: " << tags[tagCount].getTopic() << endl;
+		tagCount++;
 	}
 	return true;
 }
@@ -710,14 +673,13 @@ bool i2c_config_tags(Setting& tagsSettings, uint8_t deviceId) {
 /**
  * read device configuration from config file
  */
-
-bool i2c_config_devices(Setting& i2cDeviceSettings) {
+bool config_devices(Setting& deviceSettings) {
 	int deviceId, numTags;
 	string deviceName;
 	bool deviceEnabled;
 
 	// we need at least one slave in config file
-	int numDevices = i2cDeviceSettings.getLength();
+	int numDevices = deviceSettings.getLength();
 	if (numDevices < 1) {
 		log(LOG_ERR, "Error in config file, no Modbus slaves found");
 		return false;
@@ -726,58 +688,58 @@ bool i2c_config_devices(Setting& i2cDeviceSettings) {
 	// calculate the total number of tags for all configured slaves
 	numTags = 0;
 	for (int deviceIdx = 0; deviceIdx < numDevices; deviceIdx++) {
-		if (i2cDeviceSettings[deviceIdx].exists("tags")) {
-			if (!i2cDeviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
+		if (deviceSettings[deviceIdx].exists("tags")) {
+			if (!deviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
 				deviceEnabled = true;	// true is assumed if there is no entry in config file
 			}
 			if (deviceEnabled) {
-				Setting& i2cTagsSettings = i2cDeviceSettings[deviceIdx].lookup("tags");
-				numTags += i2cTagsSettings.getLength();
+				Setting& tagsSettings = deviceSettings[deviceIdx].lookup("tags");
+				numTags += tagsSettings.getLength();
 			}
 		}
 	}
 
-	i2cReadTags = new I2Ctag[numTags+1];
+	tags = new Tag[numTags+1];
 
-	i2cTagCount = 0;
+	tagCount = 0;
 	// iterate through devices
 	for (int deviceIdx = 0; deviceIdx < numDevices; deviceIdx++) {
-		i2cDeviceSettings[deviceIdx].lookupValue("name", deviceName);
-		if (i2cDeviceSettings[deviceIdx].lookupValue("id", deviceId)) {
-			if (i2cDebugLevel > 0)
-				printf("%s - processing Device %d (%s)\n", __func__, deviceId, deviceName.c_str());
+		deviceSettings[deviceIdx].lookupValue("name", deviceName);
+		if (deviceSettings[deviceIdx].lookupValue("id", deviceId)) {
+//			if (1820debugLevel > 0)
+//				printf("%s - processing Device %d (%s)\n", __func__, deviceId, deviceName.c_str());
 		} else {
 			log(LOG_ERR, "Config error - PL device ID missing in entry %d", deviceId+1);
 			return false;
 		}
 
 		// get list of tags
-		if (i2cDeviceSettings[deviceIdx].exists("tags")) {
-			if (!i2cDeviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
+		if (deviceSettings[deviceIdx].exists("tags")) {
+			if (!deviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
 				deviceEnabled = true;	// true is assumed if there is no entry in config file
 			}
 			if (deviceEnabled) {
-				Setting& i2cTagsSettings = i2cDeviceSettings[deviceIdx].lookup("tags");
-				if (!i2c_config_tags(i2cTagsSettings, deviceId)) {
+				Setting& tagsSettings = deviceSettings[deviceIdx].lookup("tags");
+				if (!config_tags(tagsSettings, deviceId)) {
 					return false; }
 			} else {
-				log(LOG_NOTICE, "I2C device %d (%s) disabled in config", deviceId, deviceName.c_str());
+				log(LOG_NOTICE, "1820 device %d (%s) disabled in config", deviceId, deviceName.c_str());
 			}
 		} else {
-			log(LOG_NOTICE, "No tags defined for I2C device %d", deviceId);
+			log(LOG_NOTICE, "No tags defined for 1820 device %d", deviceId);
 			// this is a permissible condition
 		}
 	}
 	// mark end of array
-	i2cReadTags[i2cTagCount].setUpdateCycleId(-1);
-	i2cReadTags[i2cTagCount].setSlaveId(I2C_DEVICEID_MAX +1);
+	tags[tagCount].setUpdateCycleId(-1);
+	//tags[tagCount].setSlaveId(I2C_DEVICEID_MAX +1);
 	return true;
 }
 
 /**
  * read update cycles from config file
  */
-bool i2c_config_updatecycles(Setting& updateCyclesSettings) {
+bool config_updatecycles(Setting& updateCyclesSettings) {
 	int idValue, interval, index;
 	int numUpdateCycles = updateCyclesSettings.getLength();
 
@@ -814,13 +776,13 @@ bool i2c_config_updatecycles(Setting& updateCyclesSettings) {
 
 
 /**
- * read I2C configuration from config file
+ * read 1820 device configuration from config file
  */
-bool i2c_config() {
+bool dev_config() {
 	// Configure update cycles
 	try {
 		Setting& updateCyclesSettings = cfg.lookup("updatecycles");
-		if (!i2c_config_updatecycles(updateCyclesSettings)) {
+		if (!config_updatecycles(updateCyclesSettings)) {
 			return false; }
 	} catch (const SettingNotFoundException &excp) {
 		log(LOG_ERR, "Error in config file <%s> not found", excp.getPath());
@@ -831,10 +793,10 @@ bool i2c_config() {
 	}
 
 
-	// Configure i2c devices
+	// Configure 1820 devices
 	try {
-		Setting& i2cDeviceSettings = cfg.lookup("i2cdevices");
-		if (!i2c_config_devices(i2cDeviceSettings)) {
+		Setting& deviceSettings = cfg.lookup("1820devices");
+		if (!config_devices(deviceSettings)) {
 			return false; }
 	} catch (const SettingNotFoundException &excp) {
 		log(LOG_ERR, "Error in config file <%s> not found", excp.getPath());
@@ -846,7 +808,7 @@ bool i2c_config() {
 		log(LOG_ERR, "Error in config file - Parse Exception");
 		return false;
 	} catch (...) {
-		log(LOG_ERR, "pl_config <pldevices> Error in config file (exception)");
+		log(LOG_ERR, "dev_config <1820devices> Error in config file (exception)");
 		return false;
 	}
 	return true;
@@ -854,49 +816,12 @@ bool i2c_config() {
 
 
 /**
- * initialize I2C interface devices
+ * initialize 1820 interface devices
  * @returns false for configuration error, otherwise true
  */
-bool i2c_init() {
-    // sequence is important, the I2C setup also calls
-    // WiringPiSetupSys() which is required for pin IO functions
+bool dev_init() {
 
-    // initialize environment temp sensor
-//	tmp_env.initialize();
-
-    // initialize rack temp sensor
-    //tmp_rack.initialize();
-
-    // Power Management board ADC's
-/*    pwr_adc1.initialize();
-    if (!pwr_adc1.testConnection()) {
-        if (!runAsDaemon) {
-            printf("ADS1115 #1 on power management board not found \n");
-            // exit(0);
-        }
-    }
-    pwr_adc1.setGain(ADS1115_PGA_4P096);
-    if (!runAsDaemon) {
-        pwr_adc1.showConfigRegister();
-    }
-    pwr_adc2.initialize();
-    if (!pwr_adc2.testConnection()) {
-        if (!runAsDaemon) {
-            printf("ADS1115 #2 on power management board not found \n");
-            // exit(0);
-        }
-    }
-    pwr_adc2.setGain(ADS1115_PGA_4P096);
-    if (!runAsDaemon) {
-        pwr_adc2.showConfigRegister();
-	} */
-
-	// VI-Monitor board
-	if (!vimon.initialize( ADS1115_ADDRESS_ADDR_SDA )) {
-		return false;
-	}
-
-	if (!i2c_config()) return false;
+	if (!dev_config()) return false;
 	if (!assign_updatecycles()) return false;
 	return true;
 }
@@ -1095,8 +1020,8 @@ int main (int argc, char *argv[])
 	}
 
 	if (!mqtt_init()) goto exit_fail;
-	if (!init_values()) goto exit_fail;
-//	if (!i2c_init()) goto exit_fail;
+//	if (!init_values()) goto exit_fail;
+	if (!dev_init()) goto exit_fail;
 	usleep(100000);
 	main_loop();
 

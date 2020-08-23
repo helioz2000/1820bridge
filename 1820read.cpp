@@ -83,7 +83,7 @@ int getBaudrate(int baud) {
 static void showUsage(void) {
 	cout << "usage:" << endl;
 	cout << execName << " -n10 -pSerialDevice -bBaudrate -h" << endl;
-	cout << "c = Number of results to read (default is 10, -1 is endless)" << endl;
+	cout << "n = Number of results to read (default is 10, -1 is endless)" << endl;
 	cout << "s = Serial device (e.g. /dev/ttyUSB0)" << endl;
 	cout << "b = Baudrate (e.g. 9600) [300|1200|2400|9600]" << endl;
 	cout << "h = Display help" << endl;
@@ -91,7 +91,6 @@ static void showUsage(void) {
 	cout << "default baudrate is 9600" << endl;
 //	cout << "default address is 50 (Battery Voltage)" << endl;
 }
-
 
 bool parseArguments(int argc, char *argv[]) {
 	char buffer[64];
@@ -106,7 +105,7 @@ bool parseArguments(int argc, char *argv[]) {
 			buflen = strlen(buffer);
 			if ((buffer[0] == '-') && (buflen >=2)) {
 				switch (buffer[1]) {
-				case 'c':
+				case 'n':
 					str = std::string(&buffer[2]);
 					readCount = std::stoi( str );
 					break;

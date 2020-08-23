@@ -71,6 +71,17 @@ public:
      */
     const char* getTopic(void);
 
+	/**
+	* Get the topic string
+	* @return the topic string as std:strig
+	*/
+	std::string getTopicString(void);
+
+	/**
+	 * Set topic string
+	 */
+	void setTopic(const char*);
+
     /**
      * Register a callback function to notify value changes
      * @param updatePtr a pointer to the upadate function
@@ -160,12 +171,60 @@ public:
      */
     bool getPublishRetain(void);
 
+	void setChannel(int newChannel);
+	int getChannel(void);
+
+	/**
+	* Get scaled value
+	* @return scaled value as float
+	*/
+	float getScaledValue(void);
 
 	/**
 	 * set value is retained
 	 */
 	void setValueIsRetained(bool newValue);
 	bool getValueIsRetained(void);
+
+	/**
+	* Set/Get the updatecycle_id
+	*/
+	void setUpdateCycleId(int ident);
+	int getUpdateCycleId(void);
+
+
+	const char* getFormat(void);
+	void setFormat(const char* newFormat);
+
+	/**
+	* Set/Get multiplier
+	*/
+	void setMultiplier(float);
+	float getMultiplier(void);
+
+	/**
+	* Set offset value
+	*/
+	void setOffset(float);
+
+	/**
+	* Set/Get noread value
+	*/
+	void setNoreadValue(float);
+	float getNoreadValue(void);
+
+	/**
+	* Set/Get noread action
+	*/
+	void setNoreadAction(int);
+	int getNoreadAction(void);
+
+	/**
+	* Set/Get noread ignore
+	*/
+	void setNoreadIgnore(int);
+	int getNoreadIgnore(void);
+
 
     /**
      * Set tag type (see tag_type_t)
@@ -187,6 +246,9 @@ private:
 	// All properties of this class are private
 	// Use setters & getters to access these values
 	std::string _topic;					// storage for topic path
+	std::string _format;
+	int _channel;
+	int _updatecycleID;
 	uint16_t _topicCRC;					// CRC on topic path
 	double _topicDoubleValue;			// storage numeric value
 	time_t _lastUpdateTime;				// last update time (change of value)
@@ -195,6 +257,12 @@ private:
 	bool _publish;						// true = we publish, false = we subscribe
 	bool _publishRetain;				// mqtt publish retain
 	bool _valueIsRetained;				// indicate that the current value is retained
+	float _multiplier;					// multiplier for scaled value
+	float _offset;						// offset for scaled value
+	float _noreadvalue;
+	int _noreadaction;					// action to take on noread
+	int _noreadignore;					// number of noreads to ignore before noreadaction
+	int _noreadcount;					// noread counter
 	tag_type_t _type;					// data type
 };
 

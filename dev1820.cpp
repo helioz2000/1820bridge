@@ -69,7 +69,7 @@ Dev1820::~Dev1820() {
  */
 int Dev1820::readSingle(int *channel, float *value) {
 	struct stat sb;
-
+	int result;
 	// if serial device is not open ....
 	if (fstat(this->_ttyFd, &sb) != 0) {
 		// open serial device
@@ -77,12 +77,12 @@ int Dev1820::readSingle(int *channel, float *value) {
 			return -1;			// failed to open
 	}
 
-	if (_tty_read(channel, value) < 0)
-		goto return_fail;
+tryAgain:
+	result = _tty_read(channel, value);
+	if (result == 0) return 0;
+	if (result == -2) goto tryAgain;
 
-	return 0;
-
-return_fail:
+	// should never get here
 	_tty_close();
 	return -1;
 }
@@ -103,6 +103,9 @@ int Dev1820::_tty_open() {
 		_tty_close(true);
 		return -1;
 	}
+
+	// flush input queue
+	tcflush(this->_ttyFd, TCIFLUSH);
 	//set_mincount(_tty_Fd, 0);                /* set to pure timed read */
 
 	//printf("%s: OK\n", __func__);
@@ -181,7 +184,9 @@ int Dev1820::_tty_set_attribs(int fd, int speed)
  * read one channel from the device
  * @param value: pointer to read value
  * @param channel: pointer to the channel number
- * @returns: zero on success, otherwise -1
+ * @returns: zero on success, -1 on failure, -2 for non temp data
+ * Note: the device will send startup data which causes a return
+ * value of -2.
  */
 int Dev1820::_tty_read(int *channel, float *value) {
 	int rxlen = 0;
@@ -235,10 +240,15 @@ int Dev1820::_tty_read(int *channel, float *value) {
 		}
 		//printf("%s: %d bytes: %s\n", __func__, rdlen, buf);
 		//printf("%s\n", buf);
-		result = sscanf(buf, "T%d %f", channel, value);
-		if (result != 2) {
-			fprintf(stderr, "%s: sscanf error %d <%s>\n", __func__, result, buf);
-			return -1;
+		// temp data always starts with T
+		if (buf[0] == 'T') {
+			result = sscanf(buf, "T%d %f", channel, value);
+			if (result != 2) {
+				fprintf(stderr, "%s: sscanf error %d <%s>\n", __func__, result, buf);
+				return -1;
+			}
+		} else {
+			return -2;
 		}
 	} else if (rdlen < 0) {
 		fprintf(stderr, "%s: Error from read: %d: %s\n", __func__, rdlen, strerror(errno));

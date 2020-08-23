@@ -98,32 +98,39 @@ static uint16_t gen_crc16(const char *data, uint16_t size)
 //
 
 Tag::Tag() {
-    printf("%s\n", __func__);
-    throw runtime_error("Class Tag - forbidden constructor");
+	this->_topic = "";
+	this->_valueUpdate = NULL;
+	this->_valueUpdateID = -1;
+	this->_publish = false;        // subscribe tag
+	this->_publishRetain = false;
+	this->_valueIsRetained = false;
+	this->_topicDoubleValue = 0.0;
 }
 
 Tag::Tag(const char *topicStr) {
-
     if (topicStr == NULL) {
         throw invalid_argument("Class Tag - topic is NULL");
     }
-    this->_topic = topicStr;
-    _valueUpdate = NULL;
-    _valueUpdateID = -1;
-    _publish = false;        // subscribe tag
-    _publishRetain = false;
-    _valueIsRetained = false;
-    //cout << topic << endl;
-    _topicCRC = gen_crc16(_topic.data(), _topic.length());
-    //cout << topicCRC << endl;
+    this->setTopic( topicStr );
 }
 
 Tag::~Tag() {
     //printf("%s - %s\n", __func__, topic.c_str());
 }
 
+void Tag::setTopic(const char *topicStr) {
+	if (topicStr != NULL) {
+		_topic = topicStr;
+		_topicCRC = gen_crc16(_topic.data(), _topic.length());
+	}
+}
+
 const char* Tag::getTopic(void) {
-    return _topic.c_str();
+	return _topic.c_str();
+}
+
+std::string Tag::getTopicString(void) {
+	return _topic;
 }
 
 uint16_t Tag::getTopicCrc(void) {
@@ -136,11 +143,11 @@ void Tag::registerCallback(void (*updateCallback) (int, Tag*), int callBackID) {
     _valueUpdateID = callBackID;
     //printf("%s - 2\n", __func__);
 }
-
+/*
 int Tag::valueUpdateID(void) {
     return _valueUpdateID;
 }
-
+*/
 void Tag::testCallback() {
     if (_valueUpdate != NULL) {
         (*_valueUpdate) (_valueUpdateID, this);
@@ -229,6 +236,75 @@ void Tag::setValueIsRetained(bool newValue) {
 
 bool Tag::getValueIsRetained(void) {
 	return _valueIsRetained;
+}
+
+void Tag::setUpdateCycleId(int ident) {
+	this->_updatecycleID = ident;
+}
+
+int Tag::getUpdateCycleId(void) {
+	return this->_updatecycleID;
+}
+
+const char* Tag::getFormat(void) {
+	return _format.c_str();
+}
+
+void Tag::setFormat(const char* newFormat) {
+	if (newFormat != NULL) {
+		_format = newFormat;
+	}
+}
+
+void Tag::setOffset(float newOffset) {
+	_offset = newOffset;
+}
+
+void Tag::setMultiplier(float newMultiplier) {
+	_multiplier = newMultiplier;
+}
+
+float Tag::getMultiplier(void) {
+	return _multiplier;
+}
+
+float Tag::getScaledValue(void) {
+	//float fValue = (float) _rawValue;
+	double dValue = this->_topicDoubleValue;
+	dValue *= this->_multiplier;
+	return dValue + this->_offset;
+}
+
+void Tag::setChannel(int newChannel) {
+	this->_channel = newChannel;
+}
+
+int Tag::getChannel(void) {
+	return this->_channel;
+}
+
+void Tag::setNoreadValue(float newValue) {
+	this->_noreadvalue = newValue;
+}
+
+float Tag::getNoreadValue(void) {
+	return this->_noreadvalue;
+}
+
+void Tag::setNoreadAction(int newValue) {
+	this->_noreadaction = newValue;
+}
+
+int Tag::getNoreadAction(void) {
+	return this->_noreadaction;
+}
+
+void Tag::setNoreadIgnore(int newValue) {
+	this->_noreadignore = newValue;
+}
+
+int Tag::getNoreadIgnore(void) {
+	return this->_noreadignore;
 }
 
 void Tag::setType(tag_type_t newType) {

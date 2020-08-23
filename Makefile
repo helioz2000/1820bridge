@@ -67,13 +67,13 @@ $(OBJDIR)/%.o: %.cpp
 $(OBJDIR)/1820tag.o: 1820tag.h
 $(OBJDIR)/dev1820.o: dev1820.h
 $(OBJDIR)/mqtt.o: mqtt.h
-$(OBJDIR)/1820bridge.o: 1820bridge.h 1820tag.h 1820dev.h mqtt.h
+$(OBJDIR)/1820bridge.o: 1820bridge.h 1820tag.h dev1820.h mqtt.h
 
 read: $(OBJDIR)/dev1820.o $(OBJDIR)/1820read.o
 	$(CXX) -o $(BIN_READ) $(OBJDIR)/dev1820.o $(OBJDIR)/1820read.o $(LDFLAGS)
 
-bridge: $(OBJDIR)/dev1820.o $(OBJDIR)/1820bridge.o $(OBJDIR)/tag1820.o $(OBJDIR)/mqtt.o 
-	$(CXX) -o $(TARGET) $(OBJDIR)/1820bridge.o $(OBJDIR)/dev1820.o $(OBJDIR)/tag1820.o $(OBJDIR)/mqtt.o
+bridge: $(OBJDIR)/dev1820.o $(OBJDIR)/1820bridge.o $(OBJDIR)/1820tag.o $(OBJDIR)/mqtt.o
+	$(CXX) -o $(TARGET) $(LIBS) $(OBJDIR)/1820bridge.o $(OBJDIR)/dev1820.o $(OBJDIR)/1820tag.o $(OBJDIR)/mqtt.o
 
 .PRECIOUS: $(TARGET) $(OBJ)
 
