@@ -36,13 +36,37 @@ using namespace std;
 //using namespace libconfig;
 
 bool exitSignal = false;
-bool runningAsDaemon = false;
 std::string processName;
 static string execName;
-static string ttyDeviceStr = "/dev/ttyUSB0";	// default device
+static string ttyDeviceStr = "/dev/ttyNANOTEMP";// default device
 static int ttyBaudrate;							// default baudrate is 9600
+int readCount = 10;			// default number of reads
 
 Dev1820 *dev;
+
+/* Handle OS signals
+*/
+void sigHandler(int signum)
+{
+	char signame[10];
+	switch (signum) {
+		case SIGTERM:
+			strcpy(signame, "SIGTERM");
+			break;
+		case SIGHUP:
+			strcpy(signame, "SIGHUP");
+			break;
+		case SIGINT:
+			strcpy(signame, "SIGINT");
+			break;
+
+		default:
+			break;
+	}
+
+	fprintf(stderr, "Received %s\n", signame);
+	exitSignal = true;
+}
 
 int getBaudrate(int baud) {
 	switch (baud) {
@@ -58,12 +82,12 @@ int getBaudrate(int baud) {
 
 static void showUsage(void) {
 	cout << "usage:" << endl;
-	cout << execName << " -pSerialDevice -bBaudrate -h" << endl;
-//	cout << "a = Address to read from PL device (e.g 50)[0-255]" << endl;
+	cout << execName << " -n10 -pSerialDevice -bBaudrate -h" << endl;
+	cout << "c = Number of results to read (default is 10, -1 is endless)" << endl;
 	cout << "s = Serial device (e.g. /dev/ttyUSB0)" << endl;
 	cout << "b = Baudrate (e.g. 9600) [300|1200|2400|9600]" << endl;
 	cout << "h = Display help" << endl;
-	cout << "default device is /etc/ttyUSB0" << endl;
+	cout << "default device is " << ttyDeviceStr << endl;
 	cout << "default baudrate is 9600" << endl;
 //	cout << "default address is 50 (Battery Voltage)" << endl;
 }
@@ -82,10 +106,10 @@ bool parseArguments(int argc, char *argv[]) {
 			buflen = strlen(buffer);
 			if ((buffer[0] == '-') && (buflen >=2)) {
 				switch (buffer[1]) {
-//				case 'a':
-//					str = std::string(&buffer[2]);
-//					address = std::stoi( str );
-//					break;
+				case 'c':
+					str = std::string(&buffer[2]);
+					readCount = std::stoi( str );
+					break;
 				case 's':
 					ttyDeviceStr = std::string(&buffer[2]);
 					break;
@@ -112,24 +136,35 @@ bool parseArguments(int argc, char *argv[]) {
 	return retval;
 }
 
-
 int main (int argc, char *argv[])
 {
+	int channel;
+	float value;
 
 	if (! parseArguments(argc, argv) ) goto exit_fail;
 
+	//signal (SIGTERM, sigHandler);
+	//signal (SIGHUP, sigHandler);
+	signal (SIGINT, sigHandler);
+
 	dev = new Dev1820(ttyDeviceStr.c_str(), getBaudrate(ttyBaudrate));
 
-	if ( dev->readSingle() < 0 )
-		goto exit_fail;
+	do {
+		if ( dev->readSingle(&channel, &value) < 0 ) {
+			//goto exit_fail;
+		} else {
+			printf("CH%02d: %.1f\n", channel, value);
+		}
+		// endless run for negative values
+		if (readCount < 0) readCount = -1;
+	} while ( (--readCount != 0) && (!exitSignal) );
 
-	//printf("Address %d contains %d\n", address, value);
 	delete(dev);
-	printf("Exit Success\n");
+	//printf("Exit Success\n");
 	exit(EXIT_SUCCESS);
 
 exit_fail:
 	delete(dev);
-	printf("exit with error\n");
+	//printf("exit with error\n");
 	exit(EXIT_FAILURE);
 }

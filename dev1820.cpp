@@ -33,8 +33,10 @@
 
 using namespace std;
 
-#define TTY_TIMEOUT_S 12
-#define TTY_TIMEOUT_US 0
+#define TTY_TIMEOUT 20		// seconds
+//#define TTY_TIMEOUT 0
+
+extern bool exitSignal;
 
 /*********************
  * MEMBER FUNCTIONS
@@ -55,18 +57,17 @@ Dev1820::Dev1820(const char* ttyDeviceStr, int baud) {
 }
 
 Dev1820::~Dev1820() {
-	//printf("%s\n", __func__);
+	//fprintf(stderr, "%s\n", __func__);
 	_tty_close();
 }
 
 /**
- * read single byte value from RAM address
- * @param address: RAM address of the requested value
- * @param readValue: pointer to a byte which will hold the value
+ * read exactly one temperature value
+ * @param value: pointer to read value
+ * @param channel: pointer to the channel number
  * @returns 0 if successful, -1 on failure
  */
-int Dev1820::readSingle() {
-	unsigned char value;
+int Dev1820::readSingle(int *channel, float *value) {
 	struct stat sb;
 
 	// if serial device is not open ....
@@ -76,7 +77,7 @@ int Dev1820::readSingle() {
 			return -1;			// failed to open
 	}
 
-	if (_tty_read() < 0)
+	if (_tty_read(channel, value) < 0)
 		goto return_fail;
 
 	return 0;
@@ -87,7 +88,7 @@ return_fail:
 }
 
 int Dev1820::_tty_open() {
-	this->_ttyFd = open(this->_ttyDevice.c_str(), O_RDWR | O_NOCTTY | O_SYNC);
+	this->_ttyFd = open(this->_ttyDevice.c_str(), O_RDONLY | O_NOCTTY | O_SYNC);
 	if (_ttyFd < 0) {
 		printf("%s: Error opening %s: %s\n", __func__, this->_ttyDevice.c_str(), strerror(errno));
 		return -1;
@@ -145,13 +146,29 @@ int Dev1820::_tty_set_attribs(int fd, int speed)
     tty.c_cflag &= ~CSTOPB;     /* only need 1 stop bit */
     tty.c_cflag &= ~CRTSCTS;    /* no hardware flowcontrol */
 
-    /* setup for non-canonical mode */
-	tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    // setup for non-canonical mode
+/*	tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
     tty.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
     tty.c_oflag &= ~OPOST;
-
 	tty.c_cc[VMIN] = 1;		// maximum number of bytes (more than we need)
 	tty.c_cc[VTIME] = 0;		// intercharcter timeout in 1/10 sec
+*/
+
+	// setup for canonical (line based) mode
+	tty.c_lflag |= ICANON | ISIG;  /* canonical input */
+	tty.c_lflag &= ~(ECHO | ECHOE | ECHONL | IEXTEN);	// No echo
+
+	tty.c_iflag &= ~IGNCR;  // preserve carriage return /
+	tty.c_iflag &= ~INPCK;	// diable parity checking
+	tty.c_iflag &= ~(INLCR | ICRNL | IUCLC | IMAXBEL); // no translation
+	tty.c_iflag &= ~(IXON | IXOFF | IXANY);	// no SW flowcontrol /
+
+    tty.c_oflag &= ~OPOST;	// diable impementation define processing
+
+    tty.c_cc[VEOL] = 0;		// additional EOL character
+    tty.c_cc[VEOL2] = 0;	// additional EOL character
+    tty.c_cc[VEOF] = 0x04;	// End of File character
+
 
     if (tcsetattr(fd, TCSANOW, &tty) != 0) {
         printf("%s: Error from tcsetattr: %s\n", __func__, strerror(errno));
@@ -161,14 +178,16 @@ int Dev1820::_tty_set_attribs(int fd, int speed)
 }
 
 /**
- * read PLxx double byte response
+ * read one channel from the device
  * @param value: pointer to read value
+ * @param channel: pointer to the channel number
+ * @returns: zero on success, otherwise -1
  */
-int Dev1820::_tty_read(void) {
+int Dev1820::_tty_read(int *channel, float *value) {
 	int rxlen = 0;
-	int rdlen;
-	unsigned char buf[65];
-	char c;
+	int rdlen, result;
+	char buf[65];
+	int timeout = TTY_TIMEOUT;
 
 	fd_set rfds;
 	struct timeval tv;
@@ -176,52 +195,57 @@ int Dev1820::_tty_read(void) {
 
 	FD_ZERO(&rfds);
 	FD_SET(this->_ttyFd, &rfds);
-	tv.tv_sec = TTY_TIMEOUT_S;
-	tv.tv_usec = TTY_TIMEOUT_US;
 
-	//printf("%s: select()\n", __func__);
-/*
-	select_result = select(this->_ttyFd + 1, &rfds, NULL, NULL, &tv);
+	tv.tv_sec = 16;
+	tv.tv_usec = 0;
+
+	// break the total timout into 1s chunks
+	// and respond to exitSignal
+	do {
+		FD_ZERO(&rfds);
+		FD_SET(this->_ttyFd, &rfds);
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+		select_result = select(this->_ttyFd + 1, &rfds, NULL, NULL, &tv);
+		//printf("%s: %d\n", __func__, select_result);
+		if (select_result != 0) break;
+		//printf("%s: timeout %d\n", __func__, timeout);
+	} while ( (--timeout > 0) && (!exitSignal) );
+
+	//printf("%s: select: %d\n", __func__, select_result);
+	if (exitSignal) return -1;
 
 	if (select_result == -1) {
 		fprintf(stderr, "%s: error select()\n", __func__);
 		return -1;
 	}
-	if (!select_result) {
+	if (select_result == 0) {
 		fprintf(stderr, "%s: No data within timeout.\n", __func__);
 		return -1;
 	}
-*/
-	do {
-	// read will return after the first byte is received and the specified
-	// inter char delay expires. Which is the end of a batch of temps
-		rdlen = read(this->_ttyFd, buf, sizeof(buf) - 1);
-		if (rdlen > 0) {
-				printf("%s: received %d bytes\n", __func__, rdlen);
-				printf("%s\n", buf);
-				rxlen += rdlen;
-/*
-				for (rxlen = 0; rxlen < rdlen; rxlen++) {
-					c = buf[rxlen];
-					if (c == 'T') printf("\n");
-					printf ("%d:", rxlen);
-					if (c < 31) {
-						printf("[%2.0d] ", c);
-					} else {
-						printf("%c ",c);
-					}
-				}
-				printf("\n");
-*/
-				//return 0;
-		} else if (rdlen < 0) {
-			fprintf(stderr, "%s: Error from read: %d: %s\n", __func__, rdlen, strerror(errno));
-			return -1;
-		} else {  /* rdlen == 0 */
-			fprintf(stderr, "%s: Timeout from read\n", __func__);
+
+	// read will return after a LF terminated line was received
+	rdlen = read(this->_ttyFd, buf, sizeof(buf) - 1);
+	if (rdlen > 0) {
+		// mark end of string
+		if (buf[rdlen-1] == 0x0A) { // this should be true at all times 
+			buf[rdlen-1] = 0;
+		} else {
+			buf[rdlen] = 0;
+		}
+		//printf("%s: %d bytes: %s\n", __func__, rdlen, buf);
+		//printf("%s\n", buf);
+		result = sscanf(buf, "T%d %f", channel, value);
+		if (result != 2) {
+			fprintf(stderr, "%s: sscanf error %d <%s>\n", __func__, result, buf);
 			return -1;
 		}
-	} while (rxlen < 64);
-	printf("rxlen: %d \n", rxlen);
+	} else if (rdlen < 0) {
+		fprintf(stderr, "%s: Error from read: %d: %s\n", __func__, rdlen, strerror(errno));
+		return -1;
+	} else {  /* rdlen == 0 */
+		fprintf(stderr, "%s: Timeout from read\n", __func__);
+		return -1;
+	}
 	return 0;
 }
