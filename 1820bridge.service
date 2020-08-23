@@ -1,0 +1,15 @@
+[Unit]
+Description=1820 temp device to MQTT data bridge
+After=network.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 25
+ExecStart=/usr/local/sbin/1820bridge -c/etc/1820bridge.cfg
+WorkingDirectory=/root
+Restart=no
+RestartSec=20
+User=root
+
+[Install]
+WantedBy=multi-user.target
