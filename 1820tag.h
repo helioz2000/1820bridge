@@ -34,12 +34,6 @@
 /**********************
  *      TYPEDEFS
  **********************/
-    typedef enum
-    {
-        TAG_TYPE_NUMERIC = 0,
-        TAG_TYPE_BOOL = 1
-    }tag_type_t;
-
 
 class Tag {
 public:
@@ -171,6 +165,9 @@ public:
      */
     bool getPublishRetain(void);
 
+	/**
+	 * Set/Get channel
+	 */
 	void setChannel(int newChannel);
 	int getChannel(void);
 
@@ -181,7 +178,7 @@ public:
 	float getScaledValue(void);
 
 	/**
-	 * set value is retained
+	 * set/get value is retained
 	 */
 	void setValueIsRetained(bool newValue);
 	bool getValueIsRetained(void);
@@ -192,20 +189,32 @@ public:
 	void setUpdateCycleId(int ident);
 	int getUpdateCycleId(void);
 
-
+	/**
+	 * Set/Get format
+	 */
 	const char* getFormat(void);
 	void setFormat(const char* newFormat);
 
 	/**
 	* Set/Get multiplier
 	*/
-	void setMultiplier(float);
+	void setMultiplier(float newValue);
 	float getMultiplier(void);
 
 	/**
 	* Set offset value
 	*/
-	void setOffset(float);
+	void setOffset(float newOffset);
+
+	/**
+	 * Set expiry time
+	 */
+	void setExpiryTime(int newTime);
+
+	/**
+	 * Get value expired
+	 */
+	bool isExpired(void);
 
 	/**
 	* Set/Get noread value
@@ -219,26 +228,8 @@ public:
 	void setNoreadAction(int);
 	int getNoreadAction(void);
 
-	/**
-	* Set/Get noread ignore
-	*/
-	void setNoreadIgnore(int);
-	int getNoreadIgnore(void);
-
-
-    /**
-     * Set tag type (see tag_type_t)
-     */
-    void setType(tag_type_t newType);
-
-    /**
-     * Get tag type (see tag_type_t)
-     */
-    tag_type_t type(void);
 
     // public members used to store data which is not used inside this class
-    int readInterval;                   // seconds between reads
-    time_t nextReadTime;                // next scheduled read
     int publishInterval;                // seconds between publish
     time_t nextPublishTime;             // next publish time
 
@@ -259,11 +250,9 @@ private:
 	bool _valueIsRetained;				// indicate that the current value is retained
 	float _multiplier;					// multiplier for scaled value
 	float _offset;						// offset for scaled value
-	float _noreadvalue;
+	float _noreadvalue;					// value to publish for noread
 	int _noreadaction;					// action to take on noread
-	int _noreadignore;					// number of noreads to ignore before noreadaction
-	int _noreadcount;					// noread counter
-	tag_type_t _type;					// data type
+	int _expiryTime;					// max seconds between updates before value expires
 };
 
 class TagStore {

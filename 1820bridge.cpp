@@ -241,26 +241,6 @@ bool process() {
 	return retval;
 }
 
-/*
-bool init_values(void)
-{
-	char info1[80], info2[80], info3[80], info4[80];
-
-    // get hardware info
-    hw.get_model_name(info1, sizeof(info1));
-    hw.get_os_name(info2, sizeof(info2));
-    hw.get_kernel_name(info3, sizeof(info3));
-    hw.get_ip_address(info4, sizeof(info4));
-    info_label_text = (char *)malloc(strlen(info1) +strlen(info2) +strlen(info3) +strlen(info4) +5);
-    sprintf(info_label_text, "%s\n%s\n%s\n%s", info1, info2, info3, info4);
-    if (!runningAsDaemon) {
-	    printf(info_label_text);
-        }
-    //printf(info_label_text);
-    return true;
-}
-*/
-
 #pragma mark MQTT
 
 /**
@@ -393,15 +373,18 @@ bool mqtt_publish_tag(Tag *tag) {
 	}
 	if (!mqtt.isConnected()) return false;
 
-	// Publish value if read is OK
-//	if (!tag->isNoread()) {
+	// Publish value if it hasn't expired
+	if (!tag->isExpired()) {
+		// mutex lock prevents this thread from reading while read 
+		// thread is writing a new value
+		pthread_mutex_lock(&read_mutex);
 		mqtt.publish(tag->getTopic(), tag->getFormat(), tag->getScaledValue(), tag->getPublishRetain());
+		pthread_mutex_unlock(&read_mutex);
 		//printf("%s %s - %s \n", __FILE__, __FUNCTION__, tag->getTopic());
 		return true;
-//	}
+	}
 	//printf("%s - NoRead: %s \n", __FUNCTION__, tag->getTopic());
 	// Handle Noread
-/*	if (!tag->noReadIgnoreExceeded()) return true;		// ignore noread, do nothing
 	// noreadignore is exceeded, need to take action
 	switch (tag->getNoreadAction()) {
 	case 0:	// publish null value
@@ -414,7 +397,6 @@ bool mqtt_publish_tag(Tag *tag) {
 		// do nothing (default, -1)
 		break;
 	}
-*/
 	return true;
 }
 
@@ -433,7 +415,6 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 	return;
 
 	// Iterate over all update cycles
-	//mqtt.setRetain(false);
 	while (updateCycles[index].ident >= 0) {
 		// ignore if cycle has no tags to process
 		if (updateCycles[index].tagArray == NULL) {
@@ -446,15 +427,13 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 		while (tagArray[tagIndex] >= 0) {
 			tag = tags[tagArray[tagIndex]];
 			if (publish_noread) {}
-				mqtt.publish(tag.getTopic(), tag.getFormat(), 0.0, tag.getPublishRetain());
-				//mqtt_publish_tag(mbTag, true);			// publish noread value
+				mqtt.publish(tag.getTopic(), tag.getFormat(), tag.getNoreadValue(), tag.getPublishRetain());
 			if (clear_retain) {}
 				mqtt.clear_retained_message(tag.getTopic());	// clear retained status
 			tagIndex++;
 		}
 		index++;
 	}	// while 
-
 }
 
 #pragma mark 1820 Device
@@ -468,7 +447,6 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 void *device_read (void *arg) {
 	int channel;
 	float value;
-	//printf("%s Thread Started\n", __func__);
 
 	do {
 		if ( dev->readSingle(&channel, &value) < 0 ) {
@@ -476,13 +454,12 @@ void *device_read (void *arg) {
 		} else {
 			//printf("Ch%d: %.1f\n", channel, value);
 			if(channel < tagCount) {
-				pthread_mutex_lock(&read_mutex);
+				pthread_mutex_lock(&read_mutex); 	//lock mutex during write process
 				//printf("[%d]%s: %.1f\n", channel, tags[channel].getTopic(), value);
 				tags[channel].setValue(value);
 				pthread_mutex_unlock(&read_mutex);
 			}
 		}
-		//printf("%s progress %d\n", __func__, count++);
 	} while (!exitSignal);
 
 	//fprintf(stderr, "%s Thread Completed\n", __func__);
@@ -506,7 +483,7 @@ bool dev_tags_publish() {
 			index++; continue;
 		}
 		// new reference time for each read cycle
-		refTime = time(NULL);		// used for group reads
+		refTime = time(NULL);		// used for expired reads
 		if (now >= updateCycles[index].nextUpdateTime) {
 			// set next update cycle time
 			updateCycles[index].nextUpdateTime = now + updateCycles[index].interval;
@@ -664,8 +641,8 @@ bool tag_config(Setting& tagSettings) {
 				tags[tagIndex].setNoreadValue(fValue);
 			if (tagSettings[idx].lookupValue("noreadaction", intValue))
 				tags[tagIndex].setNoreadAction(intValue);
-			if (tagSettings[idx].lookupValue("noreadignore", intValue))
-				tags[tagIndex].setNoreadIgnore(intValue);
+			if (tagSettings[idx].lookupValue("expiry", intValue))
+				tags[tagIndex].setExpiryTime(intValue);
 		}
 		//cout << "Tag " << idx;
 		//cout << " channel: " << tags[tagIndex].getChannel();
@@ -862,6 +839,8 @@ void exit_loop(void)
 	}
 
 	delete [] updateCycles;
+	// wait for read thread to complete
+	pthread_join(read_thread, NULL);
 	delete dev;
 }
 
@@ -1027,11 +1006,6 @@ int main (int argc, char *argv[]) {
 	main_loop();
 
 	exit_loop();
-
-	printf("waiting for read thread to finish\n");
-
-	// wait for read thread to finish
-	pthread_join(read_thread, NULL);
 
 	log(LOG_INFO, "exiting");
 	exit(EXIT_SUCCESS);

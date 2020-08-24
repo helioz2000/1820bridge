@@ -108,9 +108,8 @@ Tag::Tag() {
 	this->_multiplier = 1.0;
 	this->_offset = 0.0;
 	this->_noreadvalue = 0.0;
-	this->_noreadaction = 0;
-	this->_noreadignore = 0;
-	this->_noreadcount = 0;
+	this->_noreadaction = -1;	// do nothing
+	this->_expiryTime = 0;		// no expiry
 }
 
 Tag::Tag(const char *topicStr) {
@@ -181,7 +180,7 @@ bool Tag::setValue(const char* strValue) {
     float newValue;
     int result = 0;
     char firstChar = strValue[0];
-    
+
     // check for numeric data
     if ( (firstChar >= '0') && (firstChar <='9') ) {
         result = sscanf(strValue, "%f", &newValue);
@@ -275,7 +274,6 @@ float Tag::getMultiplier(void) {
 }
 
 float Tag::getScaledValue(void) {
-	//float fValue = (float) _rawValue;
 	double dValue = this->_topicDoubleValue;
 	dValue *= this->_multiplier;
 	return dValue + this->_offset;
@@ -287,6 +285,18 @@ void Tag::setChannel(int newChannel) {
 
 int Tag::getChannel(void) {
 	return this->_channel;
+}
+
+void Tag::setExpiryTime(int newValue) {
+	_expiryTime = newValue;
+}
+
+bool Tag::isExpired() {
+	// expiry time 0 = no expiry
+	if (_expiryTime <= 0) return false;
+	time_t expiry = _lastUpdateTime + _expiryTime;
+	if (expiry >= time(NULL)) return true;
+	return false;
 }
 
 void Tag::setNoreadValue(float newValue) {
@@ -305,21 +315,7 @@ int Tag::getNoreadAction(void) {
 	return this->_noreadaction;
 }
 
-void Tag::setNoreadIgnore(int newValue) {
-	this->_noreadignore = newValue;
-}
 
-int Tag::getNoreadIgnore(void) {
-	return this->_noreadignore;
-}
-
-void Tag::setType(tag_type_t newType) {
-    _type = newType;
-}
-
-tag_type_t Tag::type(void) {
-    return _type;
-}
 
 //
 // Class TagStore
