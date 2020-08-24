@@ -14,6 +14,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -57,7 +58,7 @@ const int version_minor = 0;
 static string cpu_temp_topic = "";
 static string cfgFileName;
 static string processName;
-bool exitSignal = false;
+volatile bool exitSignal = false;
 bool debugEnabled = false;
 bool runningAsDaemon = false;
 char *info_label_text;
@@ -75,8 +76,8 @@ double accPwrChg, accPwrDsc;		// power accumulator (no reset)
 
 updatecycle *updateCycles = NULL;	// array of update cycle definitions
 Tag *tags = NULL;					// array of all 1820 tags
+int tagCount = -1;					// number of tags in array
 
-int tagCount = -1;
 #define I2C_DEVICEID_MAX 254		// highest permitted I2C device ID
 #define I2C_DEVICEID_MIN 1			// lowest permitted I2C device ID
 
@@ -86,13 +87,15 @@ void mqtt_connection_status(bool status);
 void mqtt_topic_update(const struct mosquitto_message *message);
 void mqtt_subscribe_tags(void);
 void setMainLoopInterval(int newValue);
-bool i2c_read_process();
+bool dev_tags_publish();
 bool mqtt_publish_tag(Tag *tag);
 void mqtt_clear_tags(bool publish_noread, bool clear_retain);
 
 MQTT mqtt(MQTT_CLIENT_ID);
 Config cfg;			// config file
-Dev1820 dev;
+Dev1820 *dev;
+pthread_t read_thread;
+pthread_mutex_t read_mutex = PTHREAD_MUTEX_INITIALIZER;
 //Hardware hw(false);	// no screen
 
 /**
@@ -231,9 +234,9 @@ bool cfg_get_str(const std::string &path, std::string &value) {
  */
 bool process() {
 	bool retval = false;
-//	if (mqtt.isConnected()) {
-//		if (i2c_read_process()) retval = true;
-//	}
+	if (mqtt.isConnected()) {
+		if (dev_tags_publish()) retval = true;
+	}
 	retval = true;
 	return retval;
 }
@@ -260,7 +263,8 @@ bool init_values(void)
 
 #pragma mark MQTT
 
-/** Initialise the tag database (tagstore)
+/**
+ * Initialise the tag database (tagstore)
  * @return false on failure
  */
 bool mqtt_init_tags(void) {
@@ -385,10 +389,11 @@ void mqtt_topic_update(const struct mosquitto_message *message) {
  */
 bool mqtt_publish_tag(Tag *tag) {
 	if(mqttDebugEnabled) {
-		printf("%s %s - %s\n", __FILE__, __func__, tag->getTopic());
+		printf("%s %s: - %s %.1f\n", __FILE__, __func__, tag->getTopic(), tag->getScaledValue());
 	}
 	if (!mqtt.isConnected()) return false;
-	// Publish value if read was OK
+
+	// Publish value if read is OK
 //	if (!tag->isNoread()) {
 		mqtt.publish(tag->getTopic(), tag->getFormat(), tag->getScaledValue(), tag->getPublishRetain());
 		//printf("%s %s - %s \n", __FILE__, __FUNCTION__, tag->getTopic());
@@ -425,6 +430,8 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 	Tag tag;
 	//printf("%s %s", __FILE__, __func__);
 
+	return;
+
 	// Iterate over all update cycles
 	//mqtt.setRetain(false);
 	while (updateCycles[index].ident >= 0) {
@@ -453,72 +460,40 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 #pragma mark 1820 Device
 
 /**
- * Read single tag from I2C device
- * @returns: true if successful read
+ * Reading from device thread
+ * This function is to be called by pthread_create()
+ * It will continually read temperature output and update
+ * the matching tag with the received temperature value
  */
-/*bool i2c_read_tag(I2Ctag *tag) {
-	uint16_t registers[4];
-	bool retVal = true;
+void *device_read (void *arg) {
+	int channel;
 	float value;
-	int readResult = 0;
-	int16_t rawValue;
+	//printf("%s Thread Started\n", __func__);
 
-	uint8_t slaveId = tag->getSlaveId();
+	do {
+		if ( dev->readSingle(&channel, &value) < 0 ) {
+			//goto exit_fail;
+		} else {
+			//printf("Ch%d: %.1f\n", channel, value);
+			if(channel < tagCount) {
+				pthread_mutex_lock(&read_mutex);
+				//printf("[%d]%s: %.1f\n", channel, tags[channel].getTopic(), value);
+				tags[channel].setValue(value);
+				pthread_mutex_unlock(&read_mutex);
+			}
+		}
+		//printf("%s progress %d\n", __func__, count++);
+	} while (!exitSignal);
 
-	//printf("%s %s - %s\n", __FILE__, __func__, tag->getTopic());
-
-	switch(tag->getAddress()) {
-		case 101:
-			value = tmp_env.readTempC();
-			break;
-		case 301:
-			value = hw.read_cpu_temp();
-			break;
-		case 401:		// vimon battery voltage
-			readResult = vimon.getMilliVolts(0, &value);
-			break;
-		case 402:		// vimon battery current
-			readResult = vimon.getBipolarMilliAmps(&value);
-			break;
-		case 403:		// vimon battery temperature
-			readResult = vimon.getPT100temp(&value);
-			//printf("%s - temp: %.2f\n", __func__, readValue);
-			break;
-		case 1001:		// Power accumulator
-			value = accPwr * 3600;		// convert from Ws to Wh
-			//readValue = accPwr * tag->getMultiplier();
-			accPwr = 0.0;	// clear accumulator
-			break;
-		case 1002:		// Power accumulator charge
-			value = accPwrChg;
-			break;
-		case 1003:		// Power accumulator discharge
-			value = accPwrDsc;
-			break;
-		default:
-			printf("%s %s - unknown address %d\n", __FILE__, __func__, tag->getAddress());
-			retVal = false;
-			break;
-	}
-
-	if (readResult == 0) {
-		tag->setValue(value);
-	} else {
-		printf("%s %s - read error on tag address %d\n", __FILE__, __func__, tag->getAddress());
-	}
-
-	if (retVal) {
-		mqtt_publish_tag(tag);
-	}
-	return retVal;
+	//fprintf(stderr, "%s Thread Completed\n", __func__);
+	pthread_exit (NULL);
 }
-*/
 
 /**
- * process I2C cyclic read update
+ * publish device tags if dues
  * @return false if there was nothing to process, otherwise true
  */
-/*bool i2c_read_process() {
+bool dev_tags_publish() {
 	int index = 0;
 	int tagIndex = 0;
 	int *tagArray;
@@ -540,7 +515,8 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 			// read each tag in the array
 			tagIndex = 0;
 			while (tagArray[tagIndex] >= 0) {
-				i2c_read_tag(&i2cReadTags[tagArray[tagIndex]]);
+				mqtt_publish_tag(&tags[tagArray[tagIndex]]);
+				//printf("%s: %s\n", __func__, tags[tagArray[tagIndex]].getTopic());
 				tagIndex++;
 			}
 			retval = true;
@@ -551,7 +527,7 @@ void mqtt_clear_tags(bool publish_noread = true, bool clear_retain = true) {
 
 	return retval;
 }
-*/
+
 
 /**
  * assign tags to update cycles
@@ -569,22 +545,28 @@ bool assign_updatecycles () {
 	int matchCount = 0;
 	int *intArray = NULL;
 	int arIndex = 0;
+
+	//printf("%s\n", __func__);
+
 	// iterate over updatecycle array
 	while (updateCycles[updidx].ident >= 0) {
+		//printf("%s: %d\n", __func__, updidx);
 		cycleIdent = updateCycles[updidx].ident;
 		updateCycles[updidx].tagArray = NULL;
 		updateCycles[updidx].tagArraySize = 0;
-		// iterate over mbReadTags array
+		// iterate over Tag array
 		tagIdx = 0;
 		matchCount = 0;
-		while (tags[tagIdx].getUpdateCycleId() >= 0) {
+		do {
+			//printf("%s: %d\n", __func__, tagIdx);
 			// count tags with cycle id match
 			if (tags[tagIdx].getUpdateCycleId() == cycleIdent) {
 				matchCount++;
-				//cout << cycleIdent <<" " << mbReadTags[mbTagIdx].getAddress() << endl;
+				//cout << "cycIdent: " << cycleIdent <<" Channel:" << tags[tagIdx].getChannel() << endl;
 			}
 			tagIdx++;
-		}
+		} while (tagIdx < tagCount);
+
 		// skip to next cycle update if we have no matching tags
 		if (matchCount < 1) {
 			updidx++;
@@ -596,14 +578,14 @@ bool assign_updatecycles () {
 		// fill array with matching tag indexes
 		tagIdx = 0;
 		arIndex = 0;
-		while (tags[tagIdx].getUpdateCycleId() >= 0) {
+		do {
 			// count tags with cycle id match
 			if (tags[tagIdx].getUpdateCycleId() == cycleIdent) {
 				intArray[arIndex] = tagIdx;
 				arIndex++;
 			}
 			tagIdx++;
-		}
+		} while (tagIdx < tagCount);
 		// mark end of array
 		intArray[arIndex] = -1;
 		// add the array to the update cycles
@@ -612,134 +594,92 @@ bool assign_updatecycles () {
 		// next update index
 		updidx++;
 	}
+	//printf("%s Done\n", __func__);
 	return true;
 }
 
 /**
- * read tag configuration for one 1820 device from config file
+ * read all configured tags from config file
  */
-bool config_tags(Setting& tagsSettings, uint8_t deviceId) {
-	int tagIndex;
-	int tagChannel;
-	int tagUpdateCycle;
+bool tag_config(Setting& tagSettings) {
+	int numTags, idx, tagIndex, tagUpdateCycle,  maxChannel = 0;
 	string strValue;
+	bool bValue;
 	float fValue;
 	int intValue;
-	bool bValue;
 
-	int numTags = tagsSettings.getLength();
+	// we need at least one tag in config file
+	numTags = tagSettings.getLength();
 	if (numTags < 1) {
-		cout << "No tags Found " << endl;
-		return true;		// permissible condition
+		log(LOG_ERR, "%s: Error in config file, no tags found", __func__);
+		return false;
 	}
 
-	for (tagIndex = 0; tagIndex < numTags; tagIndex++) {
-		if (tagsSettings[tagIndex].lookupValue("channel", tagChannel)) {
-			tags[tagCount].setChannel(tagChannel);
-			//tags[tagCount].setSlaveId(deviceId);
+	// determine the highest channel number in the tag list
+	for (idx = 0; idx < numTags; idx++) {
+		if (tagSettings[idx].exists("channel")) {
+			if (tagSettings[idx].lookupValue("channel", intValue)) {
+				if (intValue > maxChannel) maxChannel = intValue;
+			}
+		}
+		//printf("%s: tag item %d\n", __func__, idx);
+	}
+
+	if (maxChannel == 0) {
+		log(LOG_ERR, "%s: Channel number error", __func__);
+		return false;
+	}
+
+	//printf("%s: maxChannel: %d\n", __func__, maxChannel);
+
+	// +1 -> channel=array index
+	tagCount = maxChannel+1;
+	tags = new Tag[tagCount];
+
+
+	for (idx = 0; idx < numTags; idx++) {
+		if (tagSettings[idx].lookupValue("channel", intValue)) {
+			tagIndex = intValue;
+			tags[tagIndex].setChannel(intValue);
 		} else {
 			log(LOG_WARNING, "Error in config file, tag channel missing");
 			continue;		// skip to next tag
 		}
-		if (tagsSettings[tagIndex].lookupValue("update_cycle", tagUpdateCycle)) {
-			tags[tagCount].setUpdateCycleId(tagUpdateCycle);
+		if (tagSettings[idx].lookupValue("update_cycle", tagUpdateCycle)) {
+			tags[tagIndex].setUpdateCycleId(tagUpdateCycle);
 		}
 		// is topic present? -> read mqtt related parametrs
-		if (tagsSettings[tagIndex].lookupValue("topic", strValue)) {
-			tags[tagCount].setTopic(strValue.c_str());
-			tags[tagCount].setPublishRetain(mqtt_retain_default);		// set to default
-			if (tagsSettings[tagIndex].lookupValue("retain", bValue))		// override default if required
-				tags[tagCount].setPublishRetain(bValue);
-			if (tagsSettings[tagIndex].lookupValue("format", strValue))
-				tags[tagCount].setFormat(strValue.c_str());
-			if (tagsSettings[tagIndex].lookupValue("multiplier", fValue))
-				tags[tagCount].setMultiplier(fValue);
-			if (tagsSettings[tagIndex].lookupValue("offset", fValue))
-				tags[tagCount].setOffset(fValue);
-			if (tagsSettings[tagIndex].lookupValue("noreadvalue", fValue))
-				tags[tagCount].setNoreadValue(fValue);
-			if (tagsSettings[tagIndex].lookupValue("noreadaction", intValue))
-				tags[tagCount].setNoreadAction(intValue);
-			if (tagsSettings[tagIndex].lookupValue("noreadignore", intValue))
-				tags[tagCount].setNoreadIgnore(intValue);
+		if (tagSettings[idx].lookupValue("topic", strValue)) {
+			tags[tagIndex].setTopic(strValue.c_str());
+			tags[tagIndex].setPublishRetain(mqtt_retain_default);		// set to default
+			if (tagSettings[idx].lookupValue("retain", bValue))		// override default if required
+				tags[tagIndex].setPublishRetain(bValue);
+			if (tagSettings[idx].lookupValue("format", strValue))
+				tags[tagIndex].setFormat(strValue.c_str());
+			if (tagSettings[idx].lookupValue("multiplier", fValue))
+				tags[tagIndex].setMultiplier(fValue);
+			if (tagSettings[idx].lookupValue("offset", fValue))
+				tags[tagIndex].setOffset(fValue);
+			if (tagSettings[idx].lookupValue("noreadvalue", fValue))
+				tags[tagIndex].setNoreadValue(fValue);
+			if (tagSettings[idx].lookupValue("noreadaction", intValue))
+				tags[tagIndex].setNoreadAction(intValue);
+			if (tagSettings[idx].lookupValue("noreadignore", intValue))
+				tags[tagIndex].setNoreadIgnore(intValue);
 		}
-		cout << "Tag " << tagCount << " channel: " << tagChannel << " cycle: " << tagUpdateCycle;
-		cout << " Topic: " << tags[tagCount].getTopic() << endl;
-		tagCount++;
+		//cout << "Tag " << idx;
+		//cout << " channel: " << tags[tagIndex].getChannel();
+		//cout << " cycle: " << tagUpdateCycle;
+		//cout << " Topic: " << tags[tagIndex].getTopic() << endl;
 	}
-	return true;
-}
-
-/**
- * read device configuration from config file
- */
-bool config_devices(Setting& deviceSettings) {
-	int deviceId, numTags;
-	string deviceName;
-	bool deviceEnabled;
-
-	// we need at least one slave in config file
-	int numDevices = deviceSettings.getLength();
-	if (numDevices < 1) {
-		log(LOG_ERR, "Error in config file, no Modbus slaves found");
-		return false;
-	}
-
-	// calculate the total number of tags for all configured slaves
-	numTags = 0;
-	for (int deviceIdx = 0; deviceIdx < numDevices; deviceIdx++) {
-		if (deviceSettings[deviceIdx].exists("tags")) {
-			if (!deviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
-				deviceEnabled = true;	// true is assumed if there is no entry in config file
-			}
-			if (deviceEnabled) {
-				Setting& tagsSettings = deviceSettings[deviceIdx].lookup("tags");
-				numTags += tagsSettings.getLength();
-			}
-		}
-	}
-
-	tags = new Tag[numTags+1];
-
-	tagCount = 0;
-	// iterate through devices
-	for (int deviceIdx = 0; deviceIdx < numDevices; deviceIdx++) {
-		deviceSettings[deviceIdx].lookupValue("name", deviceName);
-		if (deviceSettings[deviceIdx].lookupValue("id", deviceId)) {
-//			if (1820debugLevel > 0)
-//				printf("%s - processing Device %d (%s)\n", __func__, deviceId, deviceName.c_str());
-		} else {
-			log(LOG_ERR, "Config error - PL device ID missing in entry %d", deviceId+1);
-			return false;
-		}
-
-		// get list of tags
-		if (deviceSettings[deviceIdx].exists("tags")) {
-			if (!deviceSettings[deviceIdx].lookupValue("enabled", deviceEnabled)) {
-				deviceEnabled = true;	// true is assumed if there is no entry in config file
-			}
-			if (deviceEnabled) {
-				Setting& tagsSettings = deviceSettings[deviceIdx].lookup("tags");
-				if (!config_tags(tagsSettings, deviceId)) {
-					return false; }
-			} else {
-				log(LOG_NOTICE, "1820 device %d (%s) disabled in config", deviceId, deviceName.c_str());
-			}
-		} else {
-			log(LOG_NOTICE, "No tags defined for 1820 device %d", deviceId);
-			// this is a permissible condition
-		}
-	}
-	// mark end of array
-	tags[tagCount].setUpdateCycleId(-1);
-	//tags[tagCount].setSlaveId(I2C_DEVICEID_MAX +1);
+	//printf("%s Done\n", __func__);
 	return true;
 }
 
 /**
  * read update cycles from config file
  */
-bool config_updatecycles(Setting& updateCyclesSettings) {
+bool updatecycles_config(Setting& updateCyclesSettings) {
 	int idValue, interval, index;
 	int numUpdateCycles = updateCyclesSettings.getLength();
 
@@ -771,18 +711,20 @@ bool config_updatecycles(Setting& updateCyclesSettings) {
 	updateCycles[index].ident = -1;
 	updateCycles[index].interval = -1;
 
+	//printf("%s Done\n", __func__);
+
 	return true;
 }
-
 
 /**
  * read 1820 device configuration from config file
  */
 bool dev_config() {
+	//printf("%s Start\n", __func__);
 	// Configure update cycles
 	try {
 		Setting& updateCyclesSettings = cfg.lookup("updatecycles");
-		if (!config_updatecycles(updateCyclesSettings)) {
+		if (!updatecycles_config(updateCyclesSettings)) {
 			return false; }
 	} catch (const SettingNotFoundException &excp) {
 		log(LOG_ERR, "Error in config file <%s> not found", excp.getPath());
@@ -793,10 +735,10 @@ bool dev_config() {
 	}
 
 
-	// Configure 1820 devices
+	// Configure tags
 	try {
-		Setting& deviceSettings = cfg.lookup("1820devices");
-		if (!config_devices(deviceSettings)) {
+		Setting& tagSettings = cfg.lookup("tags");
+		if (!tag_config(tagSettings)) {
 			return false; }
 	} catch (const SettingNotFoundException &excp) {
 		log(LOG_ERR, "Error in config file <%s> not found", excp.getPath());
@@ -808,18 +750,66 @@ bool dev_config() {
 		log(LOG_ERR, "Error in config file - Parse Exception");
 		return false;
 	} catch (...) {
-		log(LOG_ERR, "dev_config <1820devices> Error in config file (exception)");
+		log(LOG_ERR, "dev_config <tags> Error in config file (exception)");
 		return false;
 	}
+
+	//printf("%s Done\n", __func__);
+
 	return true;
 }
 
+/**
+ * get a valid baudrate for PLxx controller
+ * @returns budrate constant from termios.h
+ */
+int dev_baudrate(int baud) {
+	switch (baud) {
+		case 300: return B300;
+			break;
+		case 1200: return B1200;
+			break;
+		case 2400: return B2400;
+			break;
+		case 4800: return B4800;
+			break;
+		case 9600: return B9600;
+			break;
+		case 19200: return B19200;
+			break;
+		default: return B9600;
+	}
+}
 
 /**
  * initialize 1820 interface devices
  * @returns false for configuration error, otherwise true
  */
 bool dev_init() {
+	string device;
+	string strValue;
+	int baud = 9600;
+
+	// check if device interface is configured
+	if (!cfg_get_str("interface.device", device)) {
+		log(LOG_ERR, "interface missing \"device\" parameter");
+		return false;
+	}
+	// get configuration serial device
+	if (!cfg_get_int("interface.baudrate", baud)) {
+			log(LOG_ERR, "interface missing \"baudrate\" parameter for <%s>", device.c_str());
+		return false;
+	}
+
+	// Create device object
+	dev = new Dev1820(device.c_str(), dev_baudrate(baud));
+
+	if (dev == NULL) {
+		log(LOG_ERR, "Can't initialize device on %s\n", device.c_str());
+		return false;
+	}
+
+	log(LOG_INFO, "Device cofigured on port %s at %d baud", device.c_str(), baud);
 
 	if (!dev_config()) return false;
 	if (!assign_updatecycles()) return false;
@@ -849,16 +839,16 @@ void setMainLoopInterval(int newValue)
 /**
  * called on program exit
  */
-void exit_loop(void) 
+void exit_loop(void)
 {
 	bool bValue, clearonexit = false, noreadonexit = false;
 
-	// how to handle mqtt broker published tags 
+	// how to handle mqtt broker published tags
 	// clear retain status for all tags?
 	if (cfg.lookupValue("mqtt.clearonexit", bValue))
 		clearonexit = bValue;
 	// publish noread value for all tags?
-	if (cfg.lookupValue("mqtt.noreadonexit", bValue)) 
+	if (cfg.lookupValue("mqtt.noreadonexit", bValue))
 		noreadonexit = bValue;
 	if (noreadonexit || clearonexit)
 		mqtt_clear_tags(noreadonexit, clearonexit);
@@ -872,6 +862,7 @@ void exit_loop(void)
 	}
 
 	delete [] updateCycles;
+	delete dev;
 }
 
 /**
@@ -995,8 +986,9 @@ bool parseArguments(int argc, char *argv[]) {
 	return retval;
 }
 
-int main (int argc, char *argv[])
-{
+int main (int argc, char *argv[]) {
+	int result;
+
 	if ( getppid() == 1) runningAsDaemon = true;
 
 	processName = std::string(basename(argv[0]));
@@ -1007,11 +999,14 @@ int main (int argc, char *argv[])
 	log(LOG_INFO,"Version %d.%02d [%s] ", version_major, version_minor, build_date_str);
 
 	// catch SIGTERM only if running as daemon (started via systemctl)
-	// when run from command line SIGTERM provides a last resort method
-	// of killing the process regardless of any programming errors.
+	// when run from CLI SIGTERM provides a last resort method
+	// of killing the process.
 	if (runningAsDaemon) {
 		signal (SIGTERM, sigHandler);
 	}
+
+	// SIGINT is required for clean exit in CLI or daemon
+	signal (SIGINT, sigHandler);
 
 	// read config file
 	if (! readConfig()) {
@@ -1020,12 +1015,24 @@ int main (int argc, char *argv[])
 	}
 
 	if (!mqtt_init()) goto exit_fail;
-//	if (!init_values()) goto exit_fail;
 	if (!dev_init()) goto exit_fail;
+
+	result = pthread_create(&read_thread, NULL, &device_read, NULL);
+	if (result != 0) {
+		log(LOG_ERR, "Error: pthread_create() failed\n");
+		goto exit_fail;
+	}
+
 	usleep(100000);
 	main_loop();
 
 	exit_loop();
+
+	printf("waiting for read thread to finish\n");
+
+	// wait for read thread to finish
+	pthread_join(read_thread, NULL);
+
 	log(LOG_INFO, "exiting");
 	exit(EXIT_SUCCESS);
 

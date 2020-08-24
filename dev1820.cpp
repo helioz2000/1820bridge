@@ -44,12 +44,12 @@ extern bool exitSignal;
 
 Dev1820::Dev1820() {
 	printf("%s\n", __func__);
-	throw runtime_error("Class 1820Dev - forbidden constructor");
+	throw runtime_error("Class Dev1820 - forbidden constructor");
 }
 
 Dev1820::Dev1820(const char* ttyDeviceStr, int baud) {
 	if (ttyDeviceStr == NULL) {
-		throw invalid_argument("Class 1820Dev - ttyDeviceStr is NULL");
+		throw invalid_argument("Class Dev1820 - ttyDeviceStr is NULL");
 	}
 	this->_ttyDevice = ttyDeviceStr;
 	this->_ttyBaud = baud;

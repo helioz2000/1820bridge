@@ -105,6 +105,12 @@ Tag::Tag() {
 	this->_publishRetain = false;
 	this->_valueIsRetained = false;
 	this->_topicDoubleValue = 0.0;
+	this->_multiplier = 1.0;
+	this->_offset = 0.0;
+	this->_noreadvalue = 0.0;
+	this->_noreadaction = 0;
+	this->_noreadignore = 0;
+	this->_noreadcount = 0;
 }
 
 Tag::Tag(const char *topicStr) {
