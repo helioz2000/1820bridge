@@ -1,4 +1,4 @@
-##DS18B20 Bridge to MQTT
+## DS18B20 Bridge to MQTT
 Server component for Ross Wheeler's DS18B20 Arduino Nano based temperature reader connected via USB-serial port. 
 
 Reads temperature values from the Arduino and publishes them to an MQTT server.
