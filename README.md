@@ -10,4 +10,4 @@ This code is run via two independant threads. The primary thread handles the tag
 ---
 Note: the achieve consistent USB port assignment edit `/etc/udev/rules.d/50-usb.rules` 
 and add something like this:
-`SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="ttyNANOTEMP`
+`SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="ttyNANOTEMP"`
